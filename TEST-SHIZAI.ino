@@ -1,4 +1,4 @@
-// AGV SHIZAI 02/10/2026 - TÍCH HỢP XI LANH & LÙI CHẠY MÙ
+// AGV SHIZAI 03/10/2026 
 #include "control_step.h"
 #include "sensor.h"
 
@@ -14,6 +14,10 @@ bool dang_bat_pin_11 = false;
 bool dang_bat_pin_12 = false;
 const int toc_do_lui_15 = 6000;
 
+// --- BIẾN KHIÊN MIỄN NHIỄM VẬT CẢN LÚC XẢ HÀNG ---
+bool dang_mien_nhiem_an_toan = false;
+unsigned long t_bat_dau_mien_nhiem = 0;
+
 // --- BIẾN QUẢN LÝ CHẠY MÙ ---
 const unsigned long time_chay_mu_sau_lui = 23000; // 23 giây chạy mù
 unsigned long t_ket_thuc_lui = 0;
@@ -24,6 +28,9 @@ unsigned long t_bat_dau_lui_15 = 0;
 const unsigned long time_dung_12 = 3000; // Khoảng thời gian từ lúc mở đến lúc đóng xi lanh
 bool buoc_11_done = false; // Cờ theo dõi đã mở xi lanh chưa
 bool buoc_12_done = false; // Cờ theo dõi đã đóng xi lanh chưa
+// Thêm 2 biến này vào phần đầu code
+bool dang_cho_dong_xi_lanh_khi_chay = false;
+unsigned long t_bat_dau_cho_dong = 0;
 
 const unsigned long time_bao_mat_line_lau = 10000;
 const unsigned long thoi_gian_bo_qua_mat_line = 500;
@@ -95,14 +102,20 @@ void loop() {
     // Tự động ngắt xi lanh 11, 12 đúng 1s (Chạy ngầm liên tục)
     XuLyCacTinHieuPhu(); 
 
-    // Kiểm tra an toàn: Nếu có vật cản thì dừng quét state machine
-    if (KiemTraAnToanGap() || XuLyMatLine()) return;
+    // Tự động tắt khiên miễn nhiễm sau 2 giây (2000ms) thả hàng
+    if (dang_mien_nhiem_an_toan && (millis() - t_bat_dau_mien_nhiem >= 2000)) {
+        dang_mien_nhiem_an_toan = false;
+    }
+
+    // CHỈ KIỂM TRA VẬT CẢN KHI KHÔNG CÓ KHIÊN MIỄN NHIỄM
+    if (!dang_mien_nhiem_an_toan) {
+        if (KiemTraAnToanGap() || XuLyMatLine()) return;
+    }
     
     DocVaLocCamBien();
     XuLyMayTrangThai();
     QuyetDinhXuatXung();
 }
-
 void KhoiTaoThongSoDeBa() {
     currentSpeedVal = smoothBaseSpeed = toc_do_khi_bat_dau_tang = (float)startSpeed;
     thoi_gian_bat_dau = last_ramp_time = thoi_gian_roi_tram = millis();
@@ -170,25 +183,30 @@ void XuLyCacTinHieuPhu() {
 
 void XuLyMayTrangThai() {
     unsigned long now = millis();
+    
+    // 1. CHỐN NHIỄU LÚC MỚI KHỞI ĐỘNG
     if (now - thoi_gian_cap_nguon < thoi_gian_tang_toc && (raw_sensor == 14 || raw_sensor == 15)) return;
     
+    // 2. KỊCH BẢN QUAY ĐẦU (MÃ 12)
     if (raw_sensor == 12 && trang_thai_14 == CHAY_BINH_THUONG) {
-        trang_thai_14 = QUAY_DAU; thoi_gian_bat_dau_quay = now;
+        trang_thai_14 = QUAY_DAU; 
+        thoi_gian_bat_dau_quay = now;
     }
     if (trang_thai_14 == QUAY_DAU) {
         if (now - thoi_gian_bat_dau_quay >= THOI_GIAN_QUAY_MU && raw_sensor == 0) {
-            trang_thai_14 = CHAY_BINH_THUONG; KhoiTaoThongSoDeBa();
+            trang_thai_14 = CHAY_BINH_THUONG; 
+            KhoiTaoThongSoDeBa();
         }
-        return;
+        return; 
     }
 
-    // --- KỊCH BẢN LÙI -> DỪNG BẬT CHÂN 11 -> CHẠY MÙ ---
+    // 3. KỊCH BẢN LÙI -> CHẠY MÙ (MÃ 15)
     if (trang_thai_14 == LUI_CASE_15) {
-        if (now - t_bat_dau_lui_15 >= 10000) { // Lùi đủ 13s
-            trang_thai_14 = TAM_DUNG_SAU_LUI;  // Đẩy sang trạng thái dừng
+        if (now - t_bat_dau_lui_15 >= 10000) { // Lùi đủ 10s
+            trang_thai_14 = TAM_DUNG_SAU_LUI;  
             t_bat_dau_dung_sau_lui = now;      
             
-            digitalWrite(pin_tin_hieu_11, LOW); // Mở xi lanh/Báo tín hiệu
+            digitalWrite(pin_tin_hieu_11, LOW); // Mở xi lanh
             dang_bat_pin_11 = true;
             t_bat_dau_pin_11 = now;
         }
@@ -196,97 +214,127 @@ void XuLyMayTrangThai() {
     }
 
     if (trang_thai_14 == TAM_DUNG_SAU_LUI) {
-        if (now - t_bat_dau_dung_sau_lui >= 1000) { // Đã dừng đủ 2s
+        if (now - t_bat_dau_dung_sau_lui >= 1000) { // Đã dừng đủ 1s
             trang_thai_14 = CHAY_BINH_THUONG;
             KhoiTaoThongSoDeBa(); 
             
-            dang_chay_mu_sau_lui = true; // Kích hoạt khiên chạy mù 23s
+            dang_chay_mu_sau_lui = true; // Kích hoạt chạy mù 23s
             t_ket_thuc_lui = now;
         }
         return; 
     }
     
+    // Tắt khiên chạy mù nếu hết 23s
     if (dang_chay_mu_sau_lui && (now - t_ket_thuc_lui >= time_chay_mu_sau_lui)) {
         dang_chay_mu_sau_lui = false; 
     }
 
-    // --- BỌC CHẶN VẠCH 14 VÀ 15 TRONG LÚC CHẠY MÙ ---
+    // 4. KỊCH BẢN ĐỌC VẠCH 14 (Có bọc chống chạy mù)
     if (!dang_chay_mu_sau_lui) {
+        // Vừa qua vạch 14, 15 thì phải cách 4s mới được đọc lại
         if (raw_sensor == 14 && (now - thoi_gian_roi_tram >= 4000)) {
+            // Lần 1 đọc thấy vạch 14
             if (trang_thai_14 == CHAY_BINH_THUONG) {
-                trang_thai_14 = BAT_DAU_GIAM_TOC; t_chong_doi_tram = now;
-                dang_tang_toc = false; dang_giam_toc = true;
-                thoi_gian_bat_dau_giam = now; toc_do_khi_bat_dau_giam = smoothBaseSpeed;
+                trang_thai_14 = BAT_DAU_GIAM_TOC; 
+                t_chong_doi_tram = now;
+                dang_tang_toc = false; 
+                dang_giam_toc = true;
+                thoi_gian_bat_dau_giam = now; 
+                toc_do_khi_bat_dau_giam = smoothBaseSpeed;
             } 
+            // Lần 2 đọc thấy vạch 14 (Dừng RF)
             else if (trang_thai_14 == CHO_DUNG && (now - t_chong_doi_tram > 500)) {
-                trang_thai_14 = DANG_DUNG_LAY_HANG; t_dung = now;
-                digitalWrite(pin_tin_hieu_RF, LOW);
+                trang_thai_14 = DANG_DUNG_LAY_HANG; 
+                t_dung = now;
+                digitalWrite(pin_tin_hieu_RF, LOW); // Phát sóng RF
             }
         }
-        
+        // Đọc thấy vạch 15 ngay sau vạch 14
         else if (raw_sensor == 15 && trang_thai_14 == CHO_DUNG && (now - t_chong_doi_tram > 500)) {
             trang_thai_14 = LUI_CASE_15;
             t_bat_dau_lui_15 = now;
             
-            digitalWrite(pin_tin_hieu_12, LOW);
+            digitalWrite(pin_tin_hieu_12, LOW); // Đóng xi lanh trước khi lùi
             dang_bat_pin_12 = true;
             t_bat_dau_pin_12 = now;
         }
     }
-    // ================== KẾT THÚC BỌC CHẠY MÙ ==================
 
+    // Chuyển từ giảm tốc sang chờ dừng khi đã rời vạch 14 lần 1
     if (trang_thai_14 == BAT_DAU_GIAM_TOC && !is_special_code && (now - t_chong_doi_tram > 150)) {
         trang_thai_14 = CHO_DUNG;
     }
     
-    // --- KỊCH BẢN XẢ HÀNG BẰNG XI LANH ---
+    // ==========================================================
+    // 5. KỊCH BẢN XẢ HÀNG (Dừng 1s -> Kích chân 11 -> Đợi 1s -> Chạy đi -> 3s sau rút xi lanh)
+    // ==========================================================
+    
+    // Khi hết 8 giây chờ tín hiệu RF, ép xe vào trạng thái dừng (khóa bánh)
     if ((trang_thai_14 == BAT_DAU_GIAM_TOC || trang_thai_14 == CHO_DUNG) && (now - thoi_gian_bat_dau_giam > time_tang_toc_case14_lan_1)) {
         trang_thai_14 = TAM_DUNG_DE_THA; 
         t_bat_dau_tam_dung = now;
-        buoc_11_done = false; // Reset cờ mở xi lanh
-        buoc_12_done = false; // Reset cờ đóng xi lanh
+        buoc_11_done = false; 
     }
 
     if (trang_thai_14 == TAM_DUNG_DE_THA) {
         unsigned long tg_da_dung = now - t_bat_dau_tam_dung;
         
-        // 1. Dừng đủ 1s (1000ms) -> Kích chân 11 (Mở xi lanh)
+        // BƯỚC 1: Dừng đủ 1s (1000ms) -> Kích mở xi lanh (chân 11)
         if (tg_da_dung >= 1000 && !buoc_11_done) {
             digitalWrite(pin_tin_hieu_11, LOW);
             dang_bat_pin_11 = true;
             t_bat_dau_pin_11 = now;
+            
+            // Bật bộ đếm ngầm 3 giây sau sẽ rút xi lanh
+            dang_cho_dong_xi_lanh_khi_chay = true;
+            t_bat_dau_cho_dong = now;
+            
             buoc_11_done = true; 
         }
-        
-        // 2. Chờ 3s sau khi mở (tổng 1000 + time_dung_12 = 4000) -> Kích chân 12 (Đóng xi lanh)
-        if (tg_da_dung >= (1000 + time_dung_12) && !buoc_12_done) {
-            digitalWrite(pin_tin_hieu_12, LOW);
-            dang_bat_pin_12 = true;
-            t_bat_dau_pin_12 = now;
-            buoc_12_done = true; 
-        }
-        
-        // 3. Chờ thêm 1s cho xi lanh đóng xong (tổng 4000 + 1000 = 5000) -> Đề ba chạy tiếp
-        if (tg_da_dung >= (1000 + time_dung_12 + 1000)) {
+
+        // BƯỚC 2: 1s sau khi kích chân 11 (Tức là tổng tg_da_dung = 2000ms) -> Đề ba chạy đi
+        if (tg_da_dung >= 3000) {
+            
+            // BẬT KHIÊN: "Bịt mắt" cảm biến an toàn trong 2 giây để xe băng qua cục hàng mượt mà
+            dang_mien_nhiem_an_toan = true;
+            t_bat_dau_mien_nhiem = now;
+
+            // Ép xe ĐỀ BA CHẠY TIẾP
             trang_thai_14 = CHAY_BINH_THUONG;
             KhoiTaoThongSoDeBa(); 
             thoi_gian_roi_tram = now;
         }
     }
     
+    // --- TIẾN TRÌNH CHẠY NGẦM: CHỜ 3S (từ lúc mở) ĐỂ ĐÓNG XI LANH ---
+    if (dang_cho_dong_xi_lanh_khi_chay && (now - t_bat_dau_cho_dong >= time_dung_12)) { // time_dung_12 = 3000
+        digitalWrite(pin_tin_hieu_12, LOW); // Đóng xi lanh
+        dang_bat_pin_12 = true;
+        t_bat_dau_pin_12 = now;
+        
+        dang_cho_dong_xi_lanh_khi_chay = false; // Đóng xong thì tắt cờ đếm ngầm
+    }
+    // ==========================================================
+    
+    // 6. KỊCH BẢN DỪNG RF TRẠM LẤY HÀNG (2 VẠCH 14)
     if (trang_thai_14 == DANG_DUNG_LAY_HANG) {
-        if (now - t_dung >= tg_gui_tinh_hieu_rf) digitalWrite(pin_tin_hieu_RF, HIGH);
+        // Tắt sóng RF sau 3s
+        if (now - t_dung >= tg_gui_tinh_hieu_rf) {
+            digitalWrite(pin_tin_hieu_RF, HIGH);
+        }
+        // Hết 20s dừng -> Chuẩn bị rời trạm
         if (now - t_dung >= time_dung_lay_hang) {
-            trang_thai_14 = ROI_KHOI_TRAM; KhoiTaoThongSoDeBa();
+            trang_thai_14 = ROI_KHOI_TRAM; 
+            KhoiTaoThongSoDeBa();
         }
     }
     
+    // Rời khỏi vạch 14 cuối cùng sau khi lấy hàng xong
     if (trang_thai_14 == ROI_KHOI_TRAM && !is_special_code) {
         trang_thai_14 = CHAY_BINH_THUONG;
         thoi_gian_roi_tram = now;
     }
 }
-
 void QuyetDinhXuatXung() {
     // Đã thêm TAM_DUNG_SAU_LUI vào đây để lúc đợi 2s xe khoá bánh đứng cứng ngắc
     if (trang_thai_14 == DANG_DUNG_LAY_HANG || trang_thai_14 == TAM_DUNG_DE_THA || trang_thai_14 == TAM_DUNG_SAU_LUI) {
@@ -370,5 +418,5 @@ void TinhToanVaXuatPID() {
     
     int PHUC_DEPTRAI = constrain(finalBaseSpeed - (int)filteredPid, speed, startSpeed);
     int PHUC_KDEP = constrain(finalBaseSpeed + (int)filteredPid, speed, startSpeed);
-    step_dc(true, true, HIGH, LOW, PHUC_KDEP, PHUC_DEPTRAI + 25);
+    step_dc(true, true, HIGH, LOW, PHUC_KDEP, PHUC_DEPTRAI + 20);
 }
