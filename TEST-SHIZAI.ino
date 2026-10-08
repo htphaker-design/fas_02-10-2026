@@ -770,3 +770,134 @@ void TinhToanVaXuatPID() {
     int PHUC_KDEP = constrain(finalBaseSpeed + (int)filteredPid, speed, startSpeed);
     step_dc(true, true, HIGH, LOW, PHUC_KDEP, PHUC_DEPTRAI + 25);
 }
+
+
+karakuri o dây 
+#include <AccelStepper.h>
+
+#define PUL_PIN A0
+#define DIR_PIN A1
+#define ENA_PIN A2
+
+#define CAM_BIEN_12 12
+#define PIN_TIEN    24  // Nhận tín hiệu từ chân 11 AGV để vươn lên
+#define PIN_LUI     22  // Nhận tín hiệu từ chân 12 AGV để thu về
+#define PIN_TU_DONG 26
+
+AccelStepper stepper(1, PUL_PIN, DIR_PIN);
+
+const float STEPS_PER_REV = 1000.0;
+float GOC_DO = 550.0; 
+
+float TOC_DO_TIM_GOC = 500.0; 
+float TOC_DO_LAM_VIEC = 1200.0;  
+float GIA_TOC_LAM_VIEC = 1500.0; 
+const unsigned long THOI_GIAN_CHONG_NHIEU = 10; 
+
+bool daTimDuocGoc = false; 
+unsigned long thoiGianBatDauLow = 0;
+bool dangXacNhanGoc = false;
+
+// Quản lý trạng thái Tự động (Chân 26)
+enum TrangThaiTuDong { IDLE, DANG_TIEN, DANG_CHO_5S, DANG_LUI };
+TrangThaiTuDong trangThaiTD = IDLE;
+unsigned long thoiGianBatDauCho = 0;
+
+void setup() {
+  pinMode(CAM_BIEN_12, INPUT_PULLUP);
+  pinMode(PIN_TIEN, INPUT_PULLUP);
+  pinMode(PIN_LUI, INPUT_PULLUP);
+  pinMode(PIN_TU_DONG, INPUT_PULLUP);
+
+  pinMode(ENA_PIN, OUTPUT);
+  digitalWrite(ENA_PIN, LOW); 
+
+  stepper.setMaxSpeed(2000.0); 
+}
+
+void loop() {
+
+  // --------------------------------------------------------
+  // TRẠNG THÁI 1: MỞ NGUỒN -> DÒ TÌM ĐIỂM GỐC (CẢM BIẾN 12)
+  // --------------------------------------------------------
+  if (!daTimDuocGoc) {
+    stepper.setSpeed(TOC_DO_TIM_GOC);
+    stepper.runSpeed(); 
+
+    if (digitalRead(CAM_BIEN_12) == LOW) {
+      if (!dangXacNhanGoc) {
+        dangXacNhanGoc = true;
+        thoiGianBatDauLow = millis();
+      } else if (millis() - thoiGianBatDauLow >= THOI_GIAN_CHONG_NHIEU) {
+        stepper.stop(); 
+        stepper.setCurrentPosition(0); // LƯU VỊ TRÍ NÀY LÀ MỐC 0
+        
+        stepper.setMaxSpeed(TOC_DO_LAM_VIEC); 
+        stepper.setAcceleration(GIA_TOC_LAM_VIEC);
+        
+        daTimDuocGoc = true; 
+        dangXacNhanGoc = false;
+        trangThaiTD = IDLE;
+      }
+    } else {
+      dangXacNhanGoc = false;
+    }
+  } 
+
+  // --------------------------------------------------------
+  // TRẠNG THÁI 2: ĐÃ CÓ GỐC -> LÀM VIỆC (CHÂN 22, 24, 26)
+  // --------------------------------------------------------
+  else {
+    long xungLamViec = (GOC_DO * STEPS_PER_REV) / 360.0; 
+
+    // NÚT 22: KÍCH CHẠY TỚI VỊ TRÍ ĐẶT
+    if (digitalRead(PIN_TIEN) == LOW) {
+      trangThaiTD = IDLE; // Hủy tự động nếu bấm tay
+      stepper.moveTo(xungLamViec);
+    }
+
+    // NÚT 24: KÍCH CHẠY LÙI MƯỢT VỀ GỐC 0
+    if (digitalRead(PIN_LUI) == LOW) {
+      trangThaiTD = IDLE; // Hủy tự động nếu bấm tay
+      stepper.moveTo(0);  // Quay về vị trí 0 bằng gia tốc làm việc
+    }
+
+    // NÚT 26: KÍCH CHẾ ĐỘ TỰ ĐỘNG (Tiến -> Đợi 5s -> Lùi)
+    if (digitalRead(PIN_TU_DONG) == LOW && trangThaiTD == IDLE) {
+      stepper.moveTo(xungLamViec);
+      trangThaiTD = DANG_TIEN;
+    }
+
+    // XỬ LÝ CHU TRÌNH TỰ ĐỘNG (CHÂN 26)
+    switch (trangThaiTD) {
+      case DANG_TIEN:
+        // Kiểm tra đã chạy tới góc đặt chưa
+        if (stepper.distanceToGo() == 0) {
+          thoiGianBatDauCho = millis();
+          trangThaiTD = DANG_CHO_5S;
+        }
+        break;
+
+      case DANG_CHO_5S:
+        // Đếm đủ 5 giây
+        if (millis() - thoiGianBatDauCho >= 5000) {
+          stepper.moveTo(0); // Lệnh lùi về vị trí 0
+          trangThaiTD = DANG_LUI;
+        }
+        break;
+
+      case DANG_LUI:
+        // Kiểm tra đã lùi về tới gốc 0 chưa
+        if (stepper.distanceToGo() == 0) {
+          trangThaiTD = IDLE; // Hoàn thành chu trình tự động
+        }
+        break;
+
+      default:
+        break;
+    }
+
+    // Lệnh bắt buộc để động cơ di chuyển theo gia tốc
+    stepper.run(); 
+  }
+}
